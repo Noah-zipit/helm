@@ -1,0 +1,29 @@
+{
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Helm"
+  },
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "description": "Lets Ashar's AI agent execute commands in his Chrome browser via a relay. Shows a badge while a command runs.",
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "manifest_version": 3,
+  "name": "Helm",
+  "options_page": "options.html",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "version": "0.5.1",
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

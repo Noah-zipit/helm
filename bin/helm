@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""Helm CLI: queue browser commands on the Helm relay and read results.
+
+Env: HELM_RELAY_URL, HELM_TOKEN (32+ random chars, never in the repo).
+Optional realtime (instant delivery via Supabase Broadcast): SUPABASE_URL,
+SUPABASE_ANON_KEY. When present, `cmd` also broadcasts (fire-and-forget)
+and `result` listens for the instant result before falling back to polling.
+
+  helm cmd [--target ID] <type> [json-args]   queue a command, print its id
+  helm result <id> [timeout]     wait for the result, print JSON
+  helm tabs                     list open tabs
+  helm instances [timeout]       list online browser instances
+"""
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+try:
+    import websocket as _ws_lib
+
+    _HAS_WS = True
+except ImportError:
+    _HAS_WS = False
+
+
+def env(name):
+    v = os.environ.get(name, "").strip()
+    if not v:
+        sys.stderr.write(f"helm: missing {name} (export it first)\n")
+        sys.exit(2)
+    return v
+
+
+def api(method, path, body=None):
+    base = env("HELM_RELAY_URL").rstrip("/")
+    token = env("HELM_TOKEN")
+    url = base + path + "?token=" + urllib.parse.quote(token)
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url, data=data, method=method, headers={"content-type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        sys.stderr.write(f"helm: relay HTTP {e.code}\n")
+        sys.exit(1)
+    except OSError as e:
+        sys.stderr.write(f"helm: cannot reach relay: {e}\n")
+        sys.exit(1)
+
+
+def queue(cmd_type, args, target=None):
+    cid = uuid.uuid4().hex[:12]
+    cmd = {"id": cid, "type": cmd_type, "args": args}
+    if target:
+        cmd["target"] = target
+    api("POST", "/api/command", {"command": cmd})
+    rt_broadcast("helm-command", cmd)  # instant path, best-effort
+    return cid
+
+
+def _rt_params():
+    """Return (ws_url, topic) or None when realtime is not configured."""
+    if not _HAS_WS:
+        return None
+    sb_url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+    token = os.environ.get("HELM_TOKEN", "").strip()
+    if not sb_url or not anon or not token:
+        return None
+    proj = sb_url.split("//", 1)[1].split(".", 1)[0]
+    ws_url = (
+        f"wss://{proj}.supabase.co/realtime/v1/websocket"
+        f"?apikey={urllib.parse.quote(anon)}&vsn=1.0.0"
+    )
+    return ws_url, f"realtime:helm-{token}"
+
+
+def _rt_join(ws, topic, ref="1"):
+    ws.send(
+        json.dumps(
+            {
+                "topic": topic,
+                "event": "phx_join",
+                "payload": {"config": {"broadcast": {"ack": False}}},
+                "ref": ref,
+            }
+        )
+    )
+
+
+def rt_broadcast(event_name, payload):
+    """Fire-and-forget broadcast. Never raises; realtime is the fast path only."""
+    try:
+        params = _rt_params()
+        if not params:
+            return
+        ws_url, topic = params
+        ws = _ws_lib.create_connection(ws_url, timeout=10)
+        try:
+            _rt_join(ws, topic)
+            time.sleep(0.4)
+            ws.send(
+                json.dumps(
+                    {
+                        "topic": topic,
+                        "event": "broadcast",
+                        "payload": {"event": event_name, "payload": payload},
+                        "ref": "2",
+                    }
+                )
+            )
+            time.sleep(0.4)
+        finally:
+            ws.close()
+    except Exception:
+        pass
+
+
+def rt_wait_result(cid, timeout):
+    """Listen for the result broadcast. Returns result dict or None."""
+    params = _rt_params()
+    if not params:
+        return None
+    ws_url, topic = params
+    try:
+        ws = _ws_lib.create_connection(ws_url, timeout=10)
+    except Exception:
+        return None
+    end = time.time() + timeout
+    try:
+        _rt_join(ws, topic)
+        while time.time() < end:
+            remaining = max(1, end - time.time())
+            ws.settimeout(remaining)
+            try:
+                raw = ws.recv()
+            except Exception:
+                break
+            try:
+                msg = json.loads(raw)
+            except ValueError:
+                continue
+            if msg.get("event") != "broadcast":
+                continue
+            inner = msg.get("payload") or {}
+            if inner.get("event") != "helm-result":
+                continue
+            res = inner.get("payload") or {}
+            if res.get("id") == cid:
+                return res
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+    return None
+
+
+def wait_result(cid, timeout):
+    # Fast path: realtime broadcast from the extension (milliseconds).
+    res = rt_wait_result(cid, min(timeout, 25))
+    if res is not None:
+        return res
+    # Fallback: poll the relay (works with every transport mode).
+    end = time.time() + timeout
+    while time.time() < end:
+        res = api("GET", "/api/results")
+        for r in res.get("results", []):
+            if r.get("id") == cid:
+                return r
+        time.sleep(1)
+    sys.stderr.write(f"helm: timed out waiting for {cid}\n")
+    sys.exit(1)
+
+
+def cmd_cmd(argv):
+    if not argv or argv[0].startswith("-"):
+        # allow flags before the type: helm cmd --target ID <type> [json-args]
+        pass
+    target = None
+    rest = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--target" and i + 1 < len(argv):
+            target = argv[i + 1]
+            i += 2
+        else:
+            rest.append(argv[i])
+            i += 1
+    if not rest:
+        sys.stderr.write("usage: helm cmd [--target ID] <type> [json-args]\n")
+        sys.exit(2)
+    args = json.loads(rest[1]) if len(rest) > 1 else {}
+    print(queue(rest[0], args, target))
+
+
+def cmd_result(argv):
+    if not argv:
+        sys.stderr.write("usage: helm result <id> [timeout]\n")
+        sys.exit(2)
+    timeout = float(argv[1]) if len(argv) > 1 else 30
+    print(json.dumps(wait_result(argv[0], timeout), indent=2))
+
+
+def cmd_tabs(argv):
+    r = wait_result(queue("listTabs", {}), 30)
+    if not r.get("ok"):
+        sys.stderr.write(f"helm: listTabs failed: {r.get('error')}\n")
+        sys.exit(1)
+    for t in r.get("tabs", []):
+        mark = "*" if t.get("active") else " "
+        print(f"{t['id']}\t{mark}\t{(t.get('title') or '')[:60]}\t{t.get('url')}")
+
+
+def _presence_http():
+    """Instances from the relay's HTTP presence heartbeats (soft-fail)."""
+    try:
+        base = env("HELM_RELAY_URL").rstrip("/")
+        token = env("HELM_TOKEN")
+    except SystemExit:
+        return []
+    url = base + "/api/presence?token=" + urllib.parse.quote(token)
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            data = json.loads(r.read().decode())
+    except Exception:
+        return []
+    out = []
+    for i in data.get("instances") or []:
+        if i.get("id"):
+            out.append(
+                {
+                    "id": i["id"],
+                    "name": i.get("name", "?"),
+                    "version": i.get("version", "?"),
+                    "at": i.get("at", 0),
+                }
+            )
+    return out
+
+
+def cmd_instances(argv):
+    """List online browser instances: HTTP presence first (works even when
+    a browser's realtime socket never connects), realtime listen as fallback."""
+    timeout = float(argv[0]) if argv else 8
+    http_seen = _presence_http()
+    if http_seen:
+        for p in http_seen:
+            age = int(time.time() - p["at"] / 1000) if p.get("at") else -1
+            print(f"{p['id']}\t{p['name']}\tv{p['version']}\tseen {age}s ago")
+        return
+    params = _rt_params()
+    if not params:
+        sys.stderr.write("helm: realtime not configured (SUPABASE_URL/ANON_KEY)\n")
+        sys.exit(2)
+    ws_url, topic = params
+    seen = {}
+    try:
+        ws = _ws_lib.create_connection(ws_url, timeout=10)
+    except Exception as e:
+        sys.stderr.write(f"helm: cannot reach realtime: {e}\n")
+        sys.exit(1)
+    end = time.time() + timeout
+    try:
+        _rt_join(ws, topic)
+        while time.time() < end:
+            ws.settimeout(max(1, end - time.time()))
+            try:
+                raw = ws.recv()
+            except Exception:
+                break
+            try:
+                msg = json.loads(raw)
+            except ValueError:
+                continue
+            if msg.get("event") != "broadcast":
+                continue
+            inner = msg.get("payload") or {}
+            if inner.get("event") != "helm-presence":
+                continue
+            p = inner.get("payload") or {}
+            if p.get("id"):
+                seen[p["id"]] = p
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+    if not seen:
+        print("no instances seen — is any Helm extension online?")
+        return
+    for pid, p in seen.items():
+        age = int(time.time() - p.get("at", 0) / 1000) if p.get("at") else -1
+        print(f"{pid}\t{p.get('name', '?')}\tv{p.get('version', '?')}\tseen {age}s ago")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        sys.stdout.write(__doc__ + "\n")
+        return
+    if argv[0] == "cmd":
+        cmd_cmd(argv[1:])
+    elif argv[0] == "result":
+        cmd_result(argv[1:])
+    elif argv[0] == "tabs":
+        cmd_tabs(argv[1:])
+    elif argv[0] == "instances":
+        cmd_instances(argv[1:])
+    else:
+        sys.stderr.write(f"helm: unknown subcommand {argv[0]!r}\n")
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

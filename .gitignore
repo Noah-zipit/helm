@@ -1,0 +1,17 @@
+# Secrets — never commit. The token in config.js controls the browser.
+extension/config.js
+.env
+.env.*
+*.env
+
+# Local / build noise
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Superseded prototypes (kept locally, not part of the shipped system)
+relay/
+relay-ws/
+cli/
+supabase/

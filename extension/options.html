@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { max-width: 520px; margin: 40px auto; padding: 0 20px; font: 14px/1.6 system-ui, sans-serif; color: #1a1a1a; }
+h1 { font-size: 20px; }
+label { display: block; margin: 14px 0 4px; font-weight: 600; }
+input[type=text], textarea, select { width: 100%; padding: 8px; font-size: 13px; box-sizing: border-box; }
+textarea { height: 90px; font-family: monospace; }
+.hint { color: #666; font-size: 12px; margin-top: 4px; }
+.warn { background: #fff8e1; border: 1px solid #e0c36a; padding: 10px 12px; margin: 18px 0; font-size: 13px; }
+button { margin-top: 16px; padding: 10px 22px; font-size: 14px; cursor: pointer; }
+#saved { color: #8a6d1f; margin-left: 10px; display: none; }
+</style>
+</head>
+<body>
+<h1>Helm settings</h1>
+
+<p style="background:#eef4ff;border:1px solid #c9dcff;border-radius:8px;padding:10px 12px;font-size:13px;">
+This browser's ID: <strong id="instanceId" style="font-family:monospace;">…</strong><br>
+<span style="color:#666;">Use this ID to target commands at this browser specifically.</span>
+</p>
+
+<div class="warn">
+Helm gives your AI agent full control of this browser — every tab, every
+logged-in session. Keep the secret token private and only run this on a
+browser you own. Personal use only.
+</div>
+
+<label for="relayUrl">Relay URL (v1 polling)</label>
+<input type="text" id="relayUrl" placeholder="https://helm-relay.vercel.app">
+<div class="hint">HTTP relay. Used for polling mode and as the result backup in realtime mode.</div>
+
+<label for="mode">Transport</label>
+<select id="mode">
+<option value="poll">Polling (v1, ~2s delay)</option>
+<option value="realtime">Realtime (v2, instant via Supabase)</option>
+</select>
+
+<label for="supabaseUrl">Supabase project URL (v2)</label>
+<input type="text" id="supabaseUrl" placeholder="https://xyz.supabase.co">
+<div class="hint">Only used when transport is Realtime.</div>
+
+<label for="supabaseAnonKey">Supabase anon key (v2)</label>
+<input type="text" id="supabaseAnonKey" placeholder="eyJhbGciOi...">
+<div class="hint">Public key — already exposed in your deployed web apps. Only used when transport is Realtime.</div>
+
+<label for="token">Secret token</label>
+<input type="text" id="token" placeholder="32+ random characters">
+<div class="hint">Shared with the agent. Generate: <code>openssl rand -hex 32</code></div>
+
+<label for="allowlist">Site allowlist (one domain per line)</label>
+<textarea id="allowlist" placeholder="wikipedia.org&#10;google.com"></textarea>
+<div class="hint">Empty = all sites allowed. Commands on other domains are refused.</div>
+
+<button id="save">Save</button><span id="saved">Saved.</span>
+<script src="options.js"></script>
+</body>
+</html>

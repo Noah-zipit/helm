@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { width: 300px; margin: 0; padding: 14px; font: 13px/1.5 system-ui, sans-serif; color: #1a1a1a; }
+h1 { font-size: 14px; margin: 0 0 8px; }
+h2 { font-size: 12px; margin: 14px 0 6px; color: #666; text-transform: uppercase; letter-spacing: 0.06em; }
+.row { display: flex; justify-content: space-between; margin: 4px 0; }
+.label { color: #666; }
+#err { color: #b00020; margin-top: 8px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ccc; margin-right: 6px; }
+.dot.on { background: #c9a227; }
+.field { margin: 8px 0; }
+.field label { display: block; font-size: 12px; color: #666; margin-bottom: 3px; }
+.field input, .field select, .field textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; font-size: 13px; border: 1px solid #ccc; border-radius: 6px; }
+.field textarea { height: 52px; resize: vertical; font-family: inherit; }
+button#save { margin-top: 10px; width: 100%; padding: 8px; font-size: 13px; cursor: pointer; border: none; border-radius: 6px; background: #1a1a2e; color: #f5f0e1; }
+#saved { display: none; color: #1a7a3a; font-size: 12px; margin-top: 6px; text-align: center; }
+hr { border: none; border-top: 1px solid #e5e5e5; margin: 12px 0 4px; }
+.hint { font-size: 11px; color: #999; margin-top: 2px; }
+</style>
+</head>
+<body>
+<h1><span id="dot" class="dot"></span>Helm</h1>
+<div class="row"><span class="label">Mode</span><span id="mode">—</span></div>
+<div class="row"><span class="label">This browser</span><span id="instance">—</span></div>
+<div class="row"><span class="label">Last poll</span><span id="poll">—</span></div>
+<div class="row"><span class="label">Last command</span><span id="cmd">—</span></div>
+<div id="err"></div>
+<hr>
+<h2>Settings</h2>
+<div class="field">
+  <label for="token">Token</label>
+  <input type="password" id="token" autocomplete="off" placeholder="Paste your Helm token">
+</div>
+<div class="field">
+  <label for="relayUrl">Relay URL</label>
+  <input type="text" id="relayUrl" autocomplete="off">
+</div>
+<div class="field">
+  <label for="modeSel">Transport</label>
+  <select id="modeSel">
+    <option value="poll">Polling (v1)</option>
+    <option value="realtime">Realtime (v2)</option>
+  </select>
+  <div class="hint">Realtime is instant. Needs the token set.</div>
+</div>
+<div class="field">
+  <label for="allowlist">Allowed domains (one per line)</label>
+  <textarea id="allowlist"></textarea>
+</div>
+<button id="save">Save</button>
+<div id="saved">Saved.</div>
+<script src="popup.js"></script>
+</body>
+</html>
