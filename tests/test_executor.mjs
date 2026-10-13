@@ -81,11 +81,15 @@ const cmd = (type, args) => executeCommand(makeChrome([]), { type, args }, []);
 
 assert.equal(isInternalUrl("chrome://newtab/"), true);
 assert.equal(isInternalUrl("https://x.com"), false);
+// Exclude-list semantics: everything allowed except blocked hosts
+// (a blocked entry also covers its subdomains).
 assert.equal(hostAllowed("https://en.wikipedia.org/wiki/X", []), true);
-assert.equal(hostAllowed("https://en.wikipedia.org/wiki/X", ["wikipedia.org"]), true);
-assert.equal(hostAllowed("https://fr.wikipedia.org/wiki/X", ["wikipedia.org"]), true);
-assert.equal(hostAllowed("https://evil.com", ["wikipedia.org"]), false);
-assert.equal(hostAllowed("not a url", ["wikipedia.org"]), false);
+assert.equal(hostAllowed("https://www.youtube.com/watch?v=x", []), true);
+assert.equal(hostAllowed("https://en.wikipedia.org/wiki/X", ["wikipedia.org"]), false);
+assert.equal(hostAllowed("https://fr.wikipedia.org/wiki/X", ["wikipedia.org"]), false);
+assert.equal(hostAllowed("https://evil.com", ["wikipedia.org"]), true);
+assert.equal(hostAllowed("https://evil.com", ["evil.com"]), false);
+assert.equal(hostAllowed("not a url", []), false);
 
 // listTabs
 {
@@ -109,13 +113,15 @@ assert.equal(hostAllowed("not a url", ["wikipedia.org"]), false);
   assert.equal(gone.ok, false);
 }
 
-// openTab refused: internal + allowlist
+// openTab refused: internal + blocklist (and allowed when not blocked)
 {
   const r1 = await cmd("openTab", { url: "chrome://settings/" });
   assert.equal(r1.ok, false);
-  const r2 = await executeCommand(makeChrome([]), { type: "openTab", args: { url: "https://evil.com" } }, ["wikipedia.org"]);
+  const r2 = await executeCommand(makeChrome([]), { type: "openTab", args: { url: "https://evil.com" } }, ["evil.com"]);
   assert.equal(r2.ok, false);
-  assert.match(r2.error, /allowlist/);
+  assert.match(r2.error, /blocklist/);
+  const r3 = await executeCommand(makeChrome([]), { type: "openTab", args: { url: "https://www.youtube.com/" } }, ["evil.com"]);
+  assert.equal(r3.ok, true);
 }
 
 // search

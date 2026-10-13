@@ -14,7 +14,7 @@ const PRESENCE_MS = 25000;
 const RECONNECT_BASE_MS = 3000;
 const SEEN_CAP = 200;
 const EXEC_TIMEOUT_MS = 25000;
-const VERSION = "0.5.1";
+const VERSION = "0.5.2";
 
 // --- state (the popup reads this) ---
 const state = {
@@ -62,7 +62,7 @@ async function readConfig() {
     "mode",
     "supabaseUrl",
     "supabaseAnonKey",
-    "allowlist",
+    "blocklist",
   ]);
   const pick = (k) => {
     const v = c[k];
@@ -82,7 +82,7 @@ async function readConfig() {
     mode: pick("mode") === "realtime" ? "realtime" : "poll",
     supabaseUrl: String(pick("supabaseUrl") || "").replace(/\/+$/, ""),
     supabaseAnonKey: String(pick("supabaseAnonKey") || ""),
-    allowlist: Array.isArray(pick("allowlist")) ? pick("allowlist") : [],
+    blocklist: Array.isArray(pick("blocklist")) ? pick("blocklist") : [],
     instance,
   };
 }
@@ -283,7 +283,7 @@ async function executeAndReport(c, cmd) {
   let result;
   try {
     const data = await Promise.race([
-      executeCommand(chrome, { type: cmd.type, args: cmd.args }, c.allowlist),
+      executeCommand(chrome, { type: cmd.type, args: cmd.args }, c.blocklist),
       sleep(EXEC_TIMEOUT_MS).then(() => {
         throw new Error(`command timed out after ${EXEC_TIMEOUT_MS / 1000}s`);
       }),

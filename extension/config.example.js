@@ -17,6 +17,7 @@ export const HELM_CONFIG = {
   // anon key is a public client key by design).
   supabaseUrl: "https://YOUR_PROJECT.supabase.co",
   supabaseAnonKey: "YOUR_SUPABASE_ANON_KEY",
-  // Domains the extension may touch. Anything not listed here is refused.
-  allowlist: ["wikipedia.org", "google.com"],
+  // Exclude-list: every site is allowed EXCEPT domains listed here
+  // (an entry also covers its subdomains). Empty = allow everything.
+  blocklist: [],
 };

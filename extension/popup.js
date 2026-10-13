@@ -37,10 +37,10 @@ async function loadSettings() {
   document.getElementById("modeSel").value =
     cfg.mode === "realtime" ? "realtime" : "poll";
   const list =
-    Array.isArray(cfg.allowlist) && cfg.allowlist.length
-      ? cfg.allowlist
+    Array.isArray(cfg.blocklist) && cfg.blocklist.length
+      ? cfg.blocklist
       : DEFAULT_ALLOWLIST;
-  document.getElementById("allowlist").value = list.join("\n");
+  document.getElementById("blocklist").value = list.join("\n");
 }
 
 document.getElementById("save").addEventListener("click", async () => {
@@ -52,8 +52,8 @@ document.getElementById("save").addEventListener("click", async () => {
   }
   const relayUrl = document.getElementById("relayUrl").value.trim() || DEFAULT_RELAY_URL;
   const mode = document.getElementById("modeSel").value;
-  const allowlist = document
-    .getElementById("allowlist")
+  const blocklist = document
+    .getElementById("blocklist")
     .value.split("\n")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
@@ -61,7 +61,7 @@ document.getElementById("save").addEventListener("click", async () => {
     token,
     relayUrl: relayUrl.replace(/\/+$/, ""),
     mode,
-    allowlist,
+    blocklist,
     // Public defaults — written so realtime mode works without the options page.
     supabaseUrl: DEFAULT_SUPABASE_URL,
     supabaseAnonKey: DEFAULT_SUPABASE_ANON_KEY,

@@ -6,19 +6,21 @@ export function isInternalUrl(url) {
   return /^(chrome|chrome-extension|edge|about|view-source):/.test(url || "");
 }
 
-// Empty allowlist = allow all (the options page urges setting one).
-export function hostAllowed(url, allowlist) {
-  if (!allowlist || allowlist.length === 0) return true;
+// Exclude-list semantics: every http(s) host is allowed EXCEPT hosts on the
+// blocklist (a blocked entry also covers its subdomains). Empty = allow all.
+export function hostAllowed(url, blocklist) {
   let host;
   try {
     host = new URL(url).hostname.toLowerCase();
   } catch {
     return false;
   }
-  return allowlist.some((d) => {
+  if (!blocklist || blocklist.length === 0) return true;
+  const blocked = blocklist.some((d) => {
     d = String(d).toLowerCase().trim().replace(/^\*\./, "");
     return d !== "" && (host === d || host.endsWith("." + d));
   });
+  return !blocked;
 }
 
 // --- page-side functions: serialized into the tab, so they may only use
@@ -190,7 +192,7 @@ async function runInTab(chrome, tabId, func, args, world) {
     : { ok: false, error: "no result from tab" };
 }
 
-export async function executeCommand(chrome, cmd, allowlist) {
+export async function executeCommand(chrome, cmd, blocklist) {
   const type = cmd && cmd.type;
   const args = (cmd && cmd.args) || {};
 
@@ -205,15 +207,15 @@ export async function executeCommand(chrome, cmd, allowlist) {
   }
 
   // Tab must exist and not be a browser-internal page. Its *current* URL is
-  // not allowlist-checked: navigate-away from a fresh tab must work.
+  // not blocklist-checked: navigate-away from a fresh tab must work.
   async function pageTab(tabId) {
     const r = await getTab(tabId);
     if (r.error) return r;
     if (isInternalUrl(r.tab.url)) {
       return { ok: false, error: "refused: browser internal page" };
     }
-    if (!hostAllowed(r.tab.url, allowlist)) {
-      return { ok: false, error: "refused: domain not in allowlist" };
+    if (!hostAllowed(r.tab.url, blocklist)) {
+      return { ok: false, error: "refused: domain is on the blocklist" };
     }
     return r;
   }
@@ -221,8 +223,8 @@ export async function executeCommand(chrome, cmd, allowlist) {
   function checkDest(url) {
     if (!url || typeof url !== "string") return { ok: false, error: "missing url" };
     if (isInternalUrl(url)) return { ok: false, error: "refused: browser internal page" };
-    if (!hostAllowed(url, allowlist)) {
-      return { ok: false, error: "refused: domain not in allowlist" };
+    if (!hostAllowed(url, blocklist)) {
+      return { ok: false, error: "refused: domain is on the blocklist" };
     }
     return null;
   }
@@ -295,7 +297,7 @@ export async function executeCommand(chrome, cmd, allowlist) {
       return { ok: true };
     }
     case "screenshot": {
-      // Read-only: allowed on any tab (no allowlist check). Defaults to the
+      // Read-only: allowed on any tab (no blocklist check). Defaults to the
       // active tab when no tabId is given.
       let tabId = args.tabId;
       if (!tabId) {
@@ -374,7 +376,7 @@ export async function executeCommand(chrome, cmd, allowlist) {
       }
     }
     case "readConsole": {
-      // Read-only: allowed on any tab (no allowlist check).
+      // Read-only: allowed on any tab (no blocklist check).
       if (!args.tabId) return { ok: false, error: "missing tabId" };
       const r = await getTab(args.tabId);
       if (r.error) return r;

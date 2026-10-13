@@ -27,7 +27,7 @@ No separate automation browser. No Playwright profile that has never heard of yo
 - **Dev signals** — read recent console output from a page
 - **Natural language** — describe a task in the Commander ("open YouTube Music and play Ashke by Karan Aujla") and Helm Brain plans and executes it step by step
 
-Every command runs against a **domain allowlist**. A command pointing anywhere else is refused by the extension itself, no matter who sent it.
+Every command runs against an exclude-list: every site is allowed except the domains you put on the blocklist, and the extension itself enforces it, no matter who sent the command.
 
 ## Components
 
@@ -87,7 +87,7 @@ export HELM_TOKEN="your token"
 | Command | Args | Notes |
 |---|---|---|
 | `listTabs` | — | All tabs in the last-focused window |
-| `openTab` | `url` | Allowlisted domains only |
+| `openTab` | `url` | Refused only for blocklisted domains |
 | `navigate` | `tabId, url` | |
 | `search` | `query` | Google search in a new tab |
 | `readText` | `tabId` | Visible page text (capped) |
@@ -105,7 +105,7 @@ Plans from Helm Brain chain tabs with `"$new"`: a step can target the tab an ear
 ## Security model
 
 - **One shared token** authenticates every hop. It is the whole perimeter — generate a long random one, keep it out of git.
-- **The allowlist is enforced in the extension**, not the client. A stolen client cannot browse outside it; widen it deliberately.
+- **The blocklist is enforced in the extension**, not the client. A stolen client still cannot touch a domain you have excluded; everything else is open by design.
 - The relay stores commands and results in a single table and drains on read; nothing is kept after delivery (presence rows are capped).
 - The Supabase **anon key is public by design** and safe to ship; the service key never leaves the relay.
 

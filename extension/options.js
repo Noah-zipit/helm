@@ -1,4 +1,4 @@
-// Helm options page: relay URL, transport, Supabase v2 settings, token, allowlist.
+// Helm options page: relay URL, transport, Supabase v2 settings, token, blocklist.
 //
 // The Supabase URL + anon key are PUBLIC (the anon key is already exposed in
 // deployed web apps), so they ship as defaults. The secret token is NEVER
@@ -20,7 +20,7 @@ async function load() {
   for (const f of FIELDS) {
     document.getElementById(f).value = F[f] || "";
   }
-  document.getElementById("allowlist").value = (cfg.allowlist || []).join("\n");
+  document.getElementById("blocklist").value = (cfg.blocklist || []).join("\n");
   const inst = cfg.instance || {};
   document.getElementById("instanceId").textContent =
     inst.id ? `${inst.name || "Browser"} (${inst.id})` : "not generated yet";
@@ -41,12 +41,12 @@ document.getElementById("save").addEventListener("click", async () => {
       return;
     }
   }
-  const allowlist = document
-    .getElementById("allowlist")
+  const blocklist = document
+    .getElementById("blocklist")
     .value.split("\n")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  const data = { allowlist };
+  const data = { blocklist };
   for (const f of FIELDS) data[f] = document.getElementById(f).value.trim();
   await chrome.storage.local.set(data);
   const el = document.getElementById("saved");
