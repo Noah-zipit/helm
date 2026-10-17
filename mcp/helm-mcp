@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""Helm MCP server — drive the Helm browser through any MCP client.
+
+Thin stdio wrapper over the existing Helm command set. It queues commands on
+the Helm relay and waits for the extension to execute them, exactly like
+`bin/helm` does. The relay and the extension are unchanged.
+
+Config: reads the same ~/.config/helm/env the CLI uses (HELM_RELAY_URL,
+HELM_TOKEN, optional SUPABASE_URL / SUPABASE_ANON_KEY). The secret is never
+printed, logged, or committed.
+
+Safety: the domain blocklist is enforced INSIDE the browser extension on
+every command. This server cannot bypass it — a blocked domain comes back
+as an error result, and the server reports it.
+
+MCP protocol: JSON-RPC 2.0 over stdio, one message per line. Implements
+`initialize`, `tools/list`, `tools/call` (+ `ping`, `notifications/initialized`).
+Stdlib only — no dependencies.
+"""
+import json
+import os
+import sys
+import time
+import importlib.util
+import traceback
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(HERE)
+
+
+def load_helm_env():
+    """Load ~/.config/helm/env (KEY=VALUE, optional `export` prefix, quotes,
+    comments). Values already in os.environ win. Never prints anything."""
+    path = os.path.expanduser("~/.config/helm/env")
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = v[1:-1]
+        if k and k not in os.environ:
+            os.environ[k] = v
+
+
+def load_helm_cli():
+    """Load bin/helm as a module so we reuse its exact relay protocol."""
+    helm_path = os.path.join(REPO_ROOT, "bin", "helm")
+    spec = importlib.util.spec_from_loader("helm_cli", loader=None)
+    mod = importlib.util.module_from_spec(spec)
+    with open(helm_path, "r") as f:
+        code = compile(f.read(), helm_path, "exec")
+    mod.__file__ = helm_path
+    exec(code, mod.__dict__)
+    return mod
+
+
+load_helm_env()
+helm = load_helm_cli()
+
+VERSION = "0.5.2"
+CALL_TIMEOUT = 45  # seconds to wait for the extension to execute
+READTEXT_TRUNCATE = 15000
+
+BLOCKLIST_NOTE = (
+    "Safety: the domain blocklist is enforced inside the Helm browser "
+    "extension. Blocked domains, chrome:// pages, and the Web Store come back "
+    "as `refused` errors — no client, including this server, can bypass them."
+)
+
+
+def _err(msg):
+    return {"content": [{"type": "text", "text": msg}], "isError": True}
+
+
+def _text(t):
+    return {"content": [{"type": "text", "text": t}], "isError": False}
+
+
+def run_command(cmd_type, args):
+    """Queue a command and wait for the result. Returns (ok, result_dict)."""
+    try:
+        cid = helm.queue(cmd_type, args)
+    except SystemExit:
+        return False, {
+            "error": "Helm is not configured: set HELM_RELAY_URL and HELM_TOKEN "
+                     "(~/.config/helm/env)"
+        }
+    except Exception as e:
+        return False, {"error": f"could not queue command: {e}"}
+    try:
+        res = helm.wait_result(cid, CALL_TIMEOUT)
+    except SystemExit:
+        return False, {
+            "error": f"timed out after {CALL_TIMEOUT}s waiting for the extension. "
+                     "Is the Helm extension installed and online? Run helm_instances."
+        }
+    except Exception as e:
+        return False, {"error": f"error waiting for result: {e}"}
+    if not isinstance(res, dict) or res.get("ok") is not True:
+        return False, res if isinstance(res, dict) else {"error": str(res)}
+    return True, res
+
+
+def _tab_label(tab):
+    return f"{tab.get('id')}: {tab.get('title') or ''} — {tab.get('url') or ''}"
+
+
+def tool_listTabs(args):
+    ok, r = run_command("listTabs", {})
+    if not ok:
+        return _err(r.get("error", "listTabs failed"))
+    tabs = r.get("tabs", [])
+    lines = [f"{'*' if t.get('active') else ' '} {_tab_label(t)}" for t in tabs]
+    return _text("\n".join(lines) if lines else "no open tabs")
+
+
+def tool_instances(args):
+    try:
+        import io as _io
+        from contextlib import redirect_stdout
+        buf = _io.StringIO()
+        with redirect_stdout(buf):
+            helm.cmd_instances([])
+        out = buf.getvalue().strip()
+    except SystemExit as e:
+        out = "instances check failed (is the realtime/presence config present?)"
+    return _text(out or "no instances seen")
+
+
+def tool_openTab(args):
+    ok, r = run_command("openTab", {"url": args["url"]})
+    return _text(f"opened tab {r['id']}: {r.get('url')}") if ok else _err(r.get("error"))
+
+
+def tool_navigate(args):
+    ok, r = run_command("navigate", {"tabId": args["tabId"], "url": args["url"]})
+    return _text("ok") if ok else _err(r.get("error"))
+
+
+def tool_search(args):
+    ok, r = run_command("search", {"query": args["query"]})
+    return (
+        _text(f"opened tab {r['id']}: {r.get('url')}") if ok else _err(r.get("error"))
+    )
+
+
+def tool_click(args):
+    ok, r = run_command("click", {"tabId": args["tabId"], "selector": args["selector"]})
+    return _text("ok") if ok else _err(r.get("error"))
+
+
+def tool_type(args):
+    ok, r = run_command(
+        "type",
+        {"tabId": args["tabId"], "selector": args["selector"], "text": args["text"]},
+    )
+    return _text("ok") if ok else _err(r.get("error"))
+
+
+def tool_pressEnter(args):
+    ok, r = run_command("pressEnter", {"tabId": args["tabId"]})
+    return _text("ok") if ok else _err(r.get("error"))
+
+
+def tool_readText(args):
+    ok, r = run_command("readText", {"tabId": args["tabId"]})
+    if not ok:
+        return _err(r.get("error"))
+    text = r.get("text", "")
+    if len(text) > READTEXT_TRUNCATE:
+        text = text[:READTEXT_TRUNCATE] + f"\n…[truncated, {len(text)} chars total]"
+    return _text(f"URL: {r.get('url')}\nTITLE: {r.get('title')}\n\n{text}")
+
+
+def tool_closeTab(args):
+    ok, r = run_command("closeTab", {"tabId": args["tabId"]})
+    return _text("ok") if ok else _err(r.get("error"))
+
+
+def tool_screenshot(args):
+    q = dict(args)
+    ok, r = run_command("screenshot", q)
+    if not ok:
+        return _err(r.get("error"))
+    data_url = r.get("dataUrl") or ""
+    if "," in data_url:
+        header, b64 = data_url.split(",", 1)
+        mime = header.split(";")[0].split(":")[1] if ":" in header else "image/png"
+    else:
+        b64, mime = "", "image/png"
+    if not b64:
+        return _err("extension returned no image data")
+    return {
+        "content": [
+            {"type": "text", "text": "screenshot of the tab"},
+            {"type": "image", "data": b64, "mimeType": mime},
+        ],
+        "isError": False,
+    }
+
+
+TOOLS = [
+    ("helm_listTabs", "List all open browser tabs.", {"type": "object"}, tool_listTabs),
+    (
+        "helm_instances",
+        "List Helm browser instances currently online (presence). Use this to "
+        "check the extension is reachable before issuing commands.",
+        {"type": "object"},
+        tool_instances,
+    ),
+    (
+        "helm_openTab",
+        "Open a URL in a new tab. Returns the tab id.\n" + BLOCKLIST_NOTE,
+        {
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+        },
+        tool_openTab,
+    ),
+    (
+        "helm_navigate",
+        "Navigate an existing tab to a URL.\n" + BLOCKLIST_NOTE,
+        {
+            "type": "object",
+            "properties": {
+                "tabId": {"type": "integer"},
+                "url": {"type": "string"},
+            },
+            "required": ["tabId", "url"],
+        },
+        tool_navigate,
+    ),
+    (
+        "helm_search",
+        "Open a new tab with a Google search for the query. Returns tab id.\n"
+        + BLOCKLIST_NOTE,
+        {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        tool_search,
+    ),
+    (
+        "helm_click",
+        "Click an element by CSS selector in a tab.\n" + BLOCKLIST_NOTE,
+        {
+            "type": "object",
+            "properties": {
+                "tabId": {"type": "integer"},
+                "selector": {"type": "string"},
+            },
+            "required": ["tabId", "selector"],
+        },
+        tool_click,
+    ),
+    (
+        "helm_type",
+        "Type text into an element by CSS selector in a tab.\n" + BLOCKLIST_NOTE,
+        {
+            "type": "object",
+            "properties": {
+                "tabId": {"type": "integer"},
+                "selector": {"type": "string"},
+                "text": {"type": "string"},
+            },
+            "required": ["tabId", "selector", "text"],
+        },
+        tool_type,
+    ),
+    (
+        "helm_pressEnter",
+        "Press Enter in the focused element of a tab (submits forms/searches).\n"
+        + BLOCKLIST_NOTE,
+        {
+            "type": "object",
+            "properties": {"tabId": {"type": "integer"}},
+            "required": ["tabId"],
+        },
+        tool_pressEnter,
+    ),
+    (
+        "helm_readText",
+        "Read the visible text of a tab: returns url, title, and page text.\n"
+        + BLOCKLIST_NOTE,
+        {
+            "type": "object",
+            "properties": {"tabId": {"type": "integer"}},
+            "required": ["tabId"],
+        },
+        tool_readText,
+    ),
+    (
+        "helm_closeTab",
+        "Close a tab by id.",
+        {
+            "type": "object",
+            "properties": {"tabId": {"type": "integer"}},
+            "required": ["tabId"],
+        },
+        tool_closeTab,
+    ),
+    (
+        "helm_screenshot",
+        "Take a screenshot of a tab (defaults to the active tab). Read-only, "
+        "not subject to the domain blocklist.",
+        {
+            "type": "object",
+            "properties": {
+                "tabId": {"type": "integer"},
+                "format": {"type": "string", "enum": ["jpeg", "png"]},
+                "quality": {"type": "integer"},
+            },
+        },
+        tool_screenshot,
+    ),
+]
+TOOL_MAP = {name: fn for name, _, _, fn in TOOLS}
+
+
+def rpc_result(rid, result):
+    return {"jsonrpc": "2.0", "id": rid, "result": result}
+
+
+def rpc_error(rid, code, message, data=None):
+    err = {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
+    if data is not None:
+        err["error"]["data"] = data
+    return err
+
+
+def handle(msg):
+    method = msg.get("method")
+    rid = msg.get("id")
+    params = msg.get("params") or {}
+
+    if method == "initialize":
+        return rpc_result(
+            rid,
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "helm-mcp", "version": VERSION},
+            },
+        )
+    if method == "ping":
+        return rpc_result(rid, {})
+    if method == "tools/list":
+        return rpc_result(
+            rid,
+            {
+                "tools": [
+                    {
+                        "name": n,
+                        "description": d,
+                        "inputSchema": s,
+                    }
+                    for n, d, s, _ in TOOLS
+                ]
+            },
+        )
+    if method == "tools/call":
+        name = params.get("name")
+        args = params.get("arguments") or {}
+        fn = TOOL_MAP.get(name)
+        if fn is None:
+            return rpc_error(rid, -32602, f"unknown tool: {name}")
+        try:
+            result = fn(args)
+        except KeyError as e:
+            return rpc_error(
+                rid, -32602, f"missing required argument: {e.args[0]!r}"
+            )
+        except Exception as e:
+            return rpc_error(rid, -32603, "tool crashed", str(e))
+        return rpc_result(rid, result)
+    if method and method.startswith("notifications/"):
+        return None  # notifications get no response
+    if method:
+        return rpc_error(rid, -32601, f"method not found: {method}")
+    return None
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            sys.stderr.write("helm-mcp: ignoring non-JSON line\n")
+            continue
+        try:
+            resp = handle(msg)
+        except Exception:
+            sys.stderr.write(traceback.format_exc())
+            rid = msg.get("id")
+            resp = (
+                rpc_error(rid, -32603, "internal error")
+                if "id" in msg
+                else None
+            )
+        if resp is not None:
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()
